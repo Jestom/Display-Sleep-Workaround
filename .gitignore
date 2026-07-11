@@ -1,0 +1,38 @@
+# Runtime and diagnostic output
+/log/
+*.log
+*.etl
+*.zip
+
+# Visual Studio and WDK build output
+.vs/
+**/.vs/
+**/out/
+**/x64/
+**/Debug/
+**/Release/
+*.user
+*.suo
+*.VC.db
+*.VC.opendb
+*.obj
+*.pdb
+*.idb
+*.ipdb
+*.iobj
+*.tlog
+*.lastbuildstate
+*.recipe
+*.sys
+*.cat
+
+# Local test-signing material
+*.cer
+*.pfx
+*.pvk
+*.snk
+
+# OS metadata
+.DS_Store
+Thumbs.db
+Desktop.ini

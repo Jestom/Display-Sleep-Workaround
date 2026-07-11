@@ -1,0 +1,57 @@
+[Version]
+Signature="$WINDOWS NT$"
+Class=System
+ClassGuid={4D36E97D-E325-11CE-BFC1-08002BE10318}
+Provider=%ProviderName%
+DriverVer=01/01/2026,0.4.0.0
+CatalogFile=TopologyDpProbeDriver.cat
+PnpLockdown=1
+
+[DestinationDirs]
+DefaultDestDir=13
+
+[SourceDisksNames]
+1=%DiskName%,,,""
+
+[SourceDisksFiles]
+TopologyDpProbeDriver.sys=1,,
+
+[Manufacturer]
+%ProviderName%=Standard,NTamd64.10.0...19041
+
+[Standard.NTamd64.10.0...19041]
+%DeviceDesc%=TopologyDpProbe_Install,Root\TopologyDpProbe
+
+[TopologyDpProbe_Install.NT]
+CopyFiles=DriverCopyFiles
+
+[TopologyDpProbe_Install.NT.HW]
+AddReg=TopologyDpProbe_Security
+
+[TopologyDpProbe_Security]
+HKR,,Security,,"D:P(A;;GA;;;SY)(A;;GA;;;BA)"
+
+[DriverCopyFiles]
+TopologyDpProbeDriver.sys
+
+[TopologyDpProbe_Install.NT.Services]
+AddService=TopologyDpProbeDriver,0x00000002,TopologyDpProbe_Service
+
+[TopologyDpProbe_Service]
+DisplayName=%ServiceDesc%
+ServiceType=1
+StartType=3
+ErrorControl=1
+ServiceBinary=%13%\TopologyDpProbeDriver.sys
+
+[TopologyDpProbe_Install.NT.Wdf]
+KmdfService=TopologyDpProbeDriver,TopologyDpProbe_Wdf
+
+[TopologyDpProbe_Wdf]
+KmdfLibraryVersion=$KMDFVERSION$
+
+[Strings]
+ProviderName="Topology DDC Sleep Workaround"
+DiskName="Topology DP Link Probe installation media"
+DeviceDesc="Topology DP Link Diagnostic Probe"
+ServiceDesc="Topology DP Link Diagnostic Probe Driver"

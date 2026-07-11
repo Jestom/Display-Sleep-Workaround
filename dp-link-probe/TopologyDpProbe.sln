@@ -1,0 +1,27 @@
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.0.31903.59
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{BC8A1FFA-BEE3-4634-8014-F334798102B3}") = "TopologyDpProbeDriver", "TopologyDpProbeDriver\TopologyDpProbeDriver.vcxproj", "{56A11C39-9697-448A-9691-EDB43E15F667}"
+EndProject
+Project("{BC8A1FFA-BEE3-4634-8014-F334798102B3}") = "TopologyDpProbeController", "TopologyDpProbeController\TopologyDpProbeController.vcxproj", "{FA7F0B4E-78C2-4872-9737-D23189B67FA5}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|x64 = Debug|x64
+		Release|x64 = Release|x64
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{56A11C39-9697-448A-9691-EDB43E15F667}.Debug|x64.ActiveCfg = Debug|x64
+		{56A11C39-9697-448A-9691-EDB43E15F667}.Debug|x64.Build.0 = Debug|x64
+		{56A11C39-9697-448A-9691-EDB43E15F667}.Release|x64.ActiveCfg = Release|x64
+		{56A11C39-9697-448A-9691-EDB43E15F667}.Release|x64.Build.0 = Release|x64
+		{FA7F0B4E-78C2-4872-9737-D23189B67FA5}.Debug|x64.ActiveCfg = Debug|x64
+		{FA7F0B4E-78C2-4872-9737-D23189B67FA5}.Debug|x64.Build.0 = Debug|x64
+		{FA7F0B4E-78C2-4872-9737-D23189B67FA5}.Release|x64.ActiveCfg = Release|x64
+		{FA7F0B4E-78C2-4872-9737-D23189B67FA5}.Release|x64.Build.0 = Release|x64
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+EndGlobal

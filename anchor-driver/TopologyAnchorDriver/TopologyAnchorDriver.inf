@@ -1,0 +1,72 @@
+;
+; TopologyAnchorDriver.inf
+;
+
+[Version]
+PnpLockDown=1
+Signature="$Windows NT$"
+ClassGUID={4D36E968-E325-11CE-BFC1-08002BE10318}
+Class=Display
+ClassVer=2.0
+Provider=%ManufacturerName%
+CatalogFile=TopologyAnchorDriver.cat
+DriverVer=07/10/2026,0.1.0.0
+
+[Manufacturer]
+%ManufacturerName%=Standard,NT$ARCH$.10.0...22000
+
+[Standard.NT$ARCH$.10.0...22000]
+%DeviceName%=TopologyAnchor_Install,Root\TopologyDdcciAnchor
+%DeviceName%=TopologyAnchor_Install,TopologyDdcciAnchor
+
+[SourceDisksFiles]
+TopologyAnchorDriver.dll=1
+
+[SourceDisksNames]
+1=%DiskName%
+
+; =================== UMDF Device ==================================
+
+[TopologyAnchor_Install.NT]
+Include=WUDFRD.inf
+Needs=WUDFRD.NT
+CopyFiles=UMDriverCopy
+
+[TopologyAnchor_Install.NT.hw]
+Include=WUDFRD.inf
+Needs=WUDFRD.NT.HW
+AddReg=TopologyAnchor_HardwareDeviceSettings
+
+[TopologyAnchor_HardwareDeviceSettings]
+HKR,,"UpperFilters",%REG_MULTI_SZ%,"IndirectKmd"
+HKR,"WUDF","DeviceGroupId",%REG_SZ%,"TopologyDdcciAnchor-aa06af16-2065-4e7a-a48a-de179bcbe8f5"
+
+[TopologyAnchor_Install.NT.Services]
+Include=WUDFRD.inf
+Needs=WUDFRD.NT.Services
+
+[TopologyAnchor_Install.NT.Wdf]
+UmdfService=TopologyAnchorDriver,TopologyAnchorDriver_Install
+UmdfServiceOrder=TopologyAnchorDriver
+UmdfKernelModeClientPolicy=AllowKernelModeClients
+
+[TopologyAnchorDriver_Install]
+UmdfLibraryVersion=$UMDFVERSION$
+ServiceBinary=%12%\UMDF\TopologyAnchorDriver.dll
+UmdfExtensions=IddCx0102
+
+[DestinationDirs]
+UMDriverCopy=12,UMDF
+
+[UMDriverCopy]
+TopologyAnchorDriver.dll
+
+; =================== Generic ==================================
+
+[Strings]
+ManufacturerName="Topology DDC Sleep Workaround"
+DiskName="Topology DDC Sleep Anchor Installation Disk"
+DeviceName="Topology DDC Sleep Anchor"
+
+REG_MULTI_SZ=0x00010000
+REG_SZ=0x00000000

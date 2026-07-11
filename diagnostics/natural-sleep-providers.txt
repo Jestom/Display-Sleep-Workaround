@@ -1,0 +1,4 @@
+"Microsoft-Windows-DxgKrnl" 0xffffffffffffffff 5
+"Microsoft-Windows-Kernel-Power" 0xffffffffffffffff 5
+"Microsoft-Windows-Display" 0xffffffffffffffff 5
+"Microsoft-Windows-UserModePowerService" 0xffffffffffffffff 5
