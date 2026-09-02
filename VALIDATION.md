@@ -26,6 +26,22 @@ Runtime status:
 - Retain the runtime and diagnostics for older affected drivers and future regressions.
 - Treat `616.56` as the known-good reference point; test later releases independently.
 
+## Runtime Reliability Hardening
+
+The maintenance-mode runtime now includes the following safeguards for older drivers or a future regression:
+
+- Before every topology change, target criteria must resolve to exactly one active path. Multiple matches require `-AllowMultipleTargets` at both installation and runtime.
+- Every listener removal is armed with a JSON recovery marker and an independent parent-process watchdog. Normal restore still uses the exact in-process DisplayConfig arrays; crash recovery falls back to `DisplaySwitch.exe /extend`.
+- A stale recovery marker is processed before a new listener performs target preflight, covering a listener crash or system interruption that also terminated the watchdog.
+- The scheduled task uses `ExecutionTimeLimit = PT0S` (unlimited) instead of 30 days.
+- `-StartNow` requires a stable listener process to be observed before installation reports success.
+- Task updates wait for any crash watchdog recovery from the stopped listener before registering or starting the replacement listener.
+- Runtime logs default to 30-day and 100-file retention limits per prefix.
+- `get-topology-ddcci-workaround-status.ps1` reports task state, actual listener processes, recovery state, active topology, optional target preflight, and recent logs.
+- `tests/RuntimeSafety.Tests.ps1` covers target cardinality, log retention, and the unlimited task setting.
+
+The crash fallback deliberately uses `/extend`; it is a last-resort recovery and may not reproduce custom display positions as exactly as the normal captured-array restore. Physical Windows validation must include killing the listener after a successful target removal and confirming that the marker is cleared and both displays return.
+
 ## Current Runtime
 
 The generic runtime consists of:

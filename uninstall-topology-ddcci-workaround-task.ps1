@@ -3,6 +3,8 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+$root = Split-Path -Parent $MyInvocation.MyCommand.Path
+$recoveryStatePath = Join-Path $root "state\topology-removal-pending.json"
 
 function Stop-TopologyDdcciListenerProcess {
   $needles = @("topology-ddcci-workaround.ps1", "start-topology-ddcci-hidden.vbs")
@@ -37,3 +39,18 @@ if ($task) {
 }
 
 Stop-TopologyDdcciListenerProcess
+
+if (Test-Path -LiteralPath $recoveryStatePath) {
+  for ($attempt = 1; $attempt -le 10 -and (Test-Path -LiteralPath $recoveryStatePath); $attempt++) {
+    Start-Sleep -Milliseconds 500
+  }
+}
+
+if (Test-Path -LiteralPath $recoveryStatePath) {
+  Write-Warning "A pending topology recovery marker remained after listener shutdown. Running DisplaySwitch.exe /extend."
+  $displaySwitchPath = Join-Path $env:windir "System32\DisplaySwitch.exe"
+  $recovery = Start-Process -FilePath $displaySwitchPath -ArgumentList "/extend" -WindowStyle Hidden -PassThru
+  $recovery.WaitForExit()
+  Remove-Item -LiteralPath $recoveryStatePath -Force -ErrorAction Stop
+  Write-Output "Pending topology recovery completed."
+}

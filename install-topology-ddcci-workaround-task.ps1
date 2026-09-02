@@ -16,12 +16,19 @@ param(
   [int]$IdleTimeoutSeconds = 0,
   [ValidateRange(100, 60000)]
   [int]$IdlePollMilliseconds = 500,
+  [switch]$AllowMultipleTargets,
   [Alias("TargetNeedle")]
   [string[]]$TargetNeedles = @(),
   [int]$TargetId = -1,
   [int]$TargetOutputTechnology = -1,
   [string]$ProfileName = "Display",
   [string]$LogFilePrefix = "display-topology-ddcci",
+  [ValidateRange(0, 36500)]
+  [int]$LogRetentionDays = 30,
+  [ValidateRange(0, 100000)]
+  [int]$LogMaxFiles = 100,
+  [ValidateRange(3, 120)]
+  [int]$StartVerificationSeconds = 15,
   [switch]$EnableLog
 )
 
@@ -29,6 +36,7 @@ $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $MyInvocation.MyCommand.Path
 $scriptPath = Join-Path $root "topology-ddcci-workaround.ps1"
 $launcherPath = Join-Path $root "start-topology-ddcci-hidden.vbs"
+$recoveryStatePath = Join-Path $root "state\topology-removal-pending.json"
 
 if (-not (Test-Path -LiteralPath $scriptPath)) {
   throw "Workaround script not found: $scriptPath"
@@ -48,6 +56,7 @@ if (@($TargetNeedles | Where-Object { $_ -match "YOUR_MONITOR_ID" }).Count -gt 0
 
 $compileArguments = @{
   CompileOnly = $true
+  NoLog = $true
   TargetNeedles = $TargetNeedles
   TargetId = $TargetId
   TargetOutputTechnology = $TargetOutputTechnology
@@ -56,8 +65,22 @@ $compileArguments = @{
   TriggerMode = $TriggerMode
   IdleTimeoutSeconds = $IdleTimeoutSeconds
   IdlePollMilliseconds = $IdlePollMilliseconds
+  LogRetentionDays = $LogRetentionDays
+  LogMaxFiles = $LogMaxFiles
+}
+if ($AllowMultipleTargets) {
+  $compileArguments.AllowMultipleTargets = $true
 }
 & $scriptPath @compileArguments | Out-Null
+
+function Get-TopologyDdcciListenerProcess {
+  return @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
+    $process = $_
+    $process.ProcessId -ne $PID -and
+    $process.CommandLine -and
+    $process.CommandLine.IndexOf($scriptPath, [System.StringComparison]::OrdinalIgnoreCase) -ge 0
+  })
+}
 
 function Stop-TopologyDdcciListenerProcess {
   $needles = @(
@@ -83,6 +106,26 @@ function Stop-TopologyDdcciListenerProcess {
     }
 }
 
+function Complete-PendingTopologyRecoveryAfterListenerStop {
+  if (-not (Test-Path -LiteralPath $recoveryStatePath)) {
+    return
+  }
+
+  for ($attempt = 1; $attempt -le 20 -and (Test-Path -LiteralPath $recoveryStatePath); $attempt++) {
+    Start-Sleep -Milliseconds 500
+  }
+  if (-not (Test-Path -LiteralPath $recoveryStatePath)) {
+    return
+  }
+
+  Write-Warning "The stopped listener left a pending topology marker. Running DisplaySwitch.exe /extend before task registration."
+  $displaySwitchPath = Join-Path $env:windir "System32\DisplaySwitch.exe"
+  $recovery = Start-Process -FilePath $displaySwitchPath -ArgumentList "/extend" -WindowStyle Hidden -PassThru
+  $recovery.WaitForExit()
+  Remove-Item -LiteralPath $recoveryStatePath -Force -ErrorAction Stop
+  Write-Output "Pending topology recovery completed before task registration."
+}
+
 $existing = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
 if ($existing) {
   Stop-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
@@ -105,6 +148,7 @@ foreach ($legacyTaskName in $legacyTaskNames) {
 }
 
 Stop-TopologyDdcciListenerProcess
+Complete-PendingTopologyRecoveryAfterListenerStop
 
 $actionArgs = @(
   "//B",
@@ -122,8 +166,14 @@ $actionArgs = @(
   "-IdleTimeoutSeconds", "$IdleTimeoutSeconds",
   "-IdlePollMilliseconds", "$IdlePollMilliseconds",
   "-ProfileName", "$ProfileName",
-  "-LogFilePrefix", "$LogFilePrefix"
+  "-LogFilePrefix", "$LogFilePrefix",
+  "-LogRetentionDays", "$LogRetentionDays",
+  "-LogMaxFiles", "$LogMaxFiles"
 )
+
+if ($AllowMultipleTargets) {
+  $actionArgs += "-AllowMultipleTargets"
+}
 
 if ($TargetNeedles.Count -gt 0) {
   $actionArgs += "-TargetNeedles"
@@ -163,7 +213,7 @@ $trigger = New-ScheduledTaskTrigger -AtLogOn -User ([System.Security.Principal.W
 $settings = New-ScheduledTaskSettingsSet `
   -AllowStartIfOnBatteries `
   -DontStopIfGoingOnBatteries `
-  -ExecutionTimeLimit (New-TimeSpan -Days 30) `
+  -ExecutionTimeLimit ([TimeSpan]::Zero) `
   -MultipleInstances IgnoreNew `
   -RestartCount 3 `
   -RestartInterval (New-TimeSpan -Minutes 1)
@@ -195,6 +245,8 @@ try {
 }
 
 $hiddenLauncherStarted = $false
+$listenerStarted = $false
+$listenerProcessId = $null
 if ($StartNow) {
   if ($registered) {
     Start-ScheduledTask -TaskName $TaskName
@@ -202,7 +254,27 @@ if ($StartNow) {
     Start-Process -FilePath "$env:windir\System32\wscript.exe" -ArgumentList $actionArgs -WindowStyle Hidden
     $hiddenLauncherStarted = $true
   }
-  Start-Sleep -Seconds 1
+  $deadline = (Get-Date).AddSeconds($StartVerificationSeconds)
+  $stableChecks = 0
+  while ((Get-Date) -lt $deadline) {
+    $listenerProcesses = @(Get-TopologyDdcciListenerProcess)
+    if ($listenerProcesses.Count -gt 0) {
+      $stableChecks++
+      if ($stableChecks -ge 2) {
+        $listenerStarted = $true
+        $listenerProcessId = $listenerProcesses[0].ProcessId
+        break
+      }
+    } else {
+      $stableChecks = 0
+    }
+    Start-Sleep -Milliseconds 500
+  }
+
+  if (-not $listenerStarted) {
+    $taskInfo = Get-ScheduledTaskInfo -TaskName $TaskName -ErrorAction SilentlyContinue
+    throw "The scheduled task was started, but no stable topology/DDC listener process was detected within $StartVerificationSeconds seconds. LastTaskResult=$($taskInfo.LastTaskResult). Run .\get-topology-ddcci-workaround-status.ps1 -TaskName '$TaskName' for diagnostics."
+  }
 }
 
-Get-ScheduledTask -TaskName $TaskName | Select-Object TaskName,State,TaskPath,@{Name="RegistrationUpdated";Expression={$registered}},@{Name="HiddenLauncherStarted";Expression={$hiddenLauncherStarted}},@{Name="TriggerMode";Expression={$TriggerMode}},@{Name="IdleTimeoutSeconds";Expression={$IdleTimeoutSeconds}},@{Name="RemainingDisplayPowerMode";Expression={$RemainingDisplayPowerMode}},@{Name="LoggingEnabled";Expression={[bool]$EnableLog}}
+Get-ScheduledTask -TaskName $TaskName | Select-Object TaskName,State,TaskPath,@{Name="RegistrationUpdated";Expression={$registered}},@{Name="HiddenLauncherStarted";Expression={$hiddenLauncherStarted}},@{Name="ListenerStarted";Expression={$listenerStarted}},@{Name="ListenerProcessId";Expression={$listenerProcessId}},@{Name="TriggerMode";Expression={$TriggerMode}},@{Name="IdleTimeoutSeconds";Expression={$IdleTimeoutSeconds}},@{Name="AllowMultipleTargets";Expression={[bool]$AllowMultipleTargets}},@{Name="RemainingDisplayPowerMode";Expression={$RemainingDisplayPowerMode}},@{Name="LoggingEnabled";Expression={[bool]$EnableLog}},@{Name="LogRetentionDays";Expression={$LogRetentionDays}},@{Name="LogMaxFiles";Expression={$LogMaxFiles}}

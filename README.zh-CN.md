@@ -52,6 +52,15 @@ Windows 电源计划自然息屏 + PowerEvent 移除 C340 -> 双屏正常息屏�
 - `uninstall-topology-ddcci-workaround-task.ps1`
   删除计划任务并停止 listener。
 
+- `get-topology-ddcci-workaround-status.ps1`
+  统一显示计划任务、listener、恢复标记、当前 topology、目标预检和最近日志。
+
+- `invoke-topology-recovery-watchdog.ps1`
+  隐藏的崩溃恢复进程。它监听 listener，只在 listener 退出且 topology 移除标记仍存在时执行 `DisplaySwitch.exe /extend`。
+
+- `topology-ddcci-runtime-utils.ps1`
+  共用的目标数量、日志保留和恢复标记工具；对应测试位于 `tests/RuntimeSafety.Tests.ps1`。
+
 - `VALIDATION.md`
   当前验证状态和待执行的 Windows 测试。
 
@@ -98,6 +107,8 @@ TargetOutputTechnology  DisplayConfig outputTech，默认 -1 表示不限制。
 ```
 
 不同类型条件按 AND 组合；多个 `TargetNeedles` 之间按 OR 匹配。
+
+默认要求最终条件只匹配一条 active path，避免两台相同型号显示器因为共用型号级 `DISPLAY#...` 子串而一起被移除。确实需要多目标时必须显式添加 `-AllowMultipleTargets`；每次真正修改 topology 前还会重新检查一次。
 
 ## 模式选择
 
@@ -191,6 +202,8 @@ Remaining display DDC/CI power-off is disabled
   -RemainingDisplayPowerMode Disabled
 ```
 
+安装器现在会确认 `-StartNow` 确实启动了稳定存在的 listener 进程。计划任务不再设置执行时间上限，因此不会在连续运行 30 天后被停止。运行日志默认按每个 `LogFilePrefix` 保留 30 天、最多 100 个；使用 `-LogRetentionDays 0` 或 `-LogMaxFiles 0` 可以分别关闭对应限制。
+
 日志目录：
 
 ```text
@@ -275,6 +288,24 @@ Windows 没有公开的通用用户态接口，可以让脚本在保留正常桌
 
 ## 状态与卸载
 
+运行统一状态检查：
+
+```powershell
+.\get-topology-ddcci-workaround-status.ps1 `
+  -TaskName "Topology DDC Sleep Workaround" `
+  -TargetNeedles "DISPLAY#HKCB34C"
+```
+
+输出包括计划任务及上次结果、真实 listener PID、待处理的崩溃恢复标记、当前 DisplayConfig topology、可选目标预检和最近日志。
+
+使用 Pester 5 运行维护测试：
+
+```powershell
+Invoke-Pester .\tests
+```
+
+每次 listener 准备移除 topology 时，runtime 都会先写入 `state\topology-removal-pending.json`，并启动监听父进程的独立 watchdog。精确恢复成功后会删除标记并停止 watchdog；如果 listener 在标记仍存在时异常退出，watchdog 会执行 `DisplaySwitch.exe /extend`，下次 listener 启动也会在目标预检前处理遗留标记。该 fallback 不一定能像进程内正常恢复一样精确保留自定义显示器位置，但可以避免被移除的 topology 长期残留。
+
 查看计划任务：
 
 ```powershell
@@ -301,6 +332,8 @@ Get-CimInstance Win32_Process |
 - listener 执行显示器电源动作之前会预检目标匹配结果。
 - 正常模式拒绝移除全部 active display path。
 - 每次移除前都会在当前进程中捕获原 active topology，并在输入、自动恢复或 listener 退出时还原。
+- 所有正常移除现在都有外部崩溃恢复 watchdog，并在 `state/` 下保存持久标记。
+- 默认要求目标条件只匹配一条 active path；多目标必须显式添加 `-AllowMultipleTargets`。
 - 正常 DisplayConfig 恢复重试失败后，仍会 fallback 到 `DisplaySwitch.exe /extend`。
 - 不要同时运行旧 C340 专用 listener 和新的通用 listener。安装器会禁用两个已知旧任务名，直接启动时也会拒绝与已检测到的 listener 并行运行。
 - 每套硬件都必须先运行 `TestOnce`，通过后再正式安装。

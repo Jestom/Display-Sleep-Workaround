@@ -13,6 +13,7 @@ param(
   [int]$IdleTimeoutSeconds = 0,
   [ValidateRange(100, 60000)]
   [int]$IdlePollMilliseconds = 500,
+  [switch]$AllowMultipleTargets,
   [switch]$ExperimentalAllowZeroActivePaths,
   [ValidateRange(30, 86400)]
   [int]$EmergencyRestoreSeconds = 240,
@@ -36,12 +37,21 @@ param(
   [int]$TargetOutputTechnology = -1,
   [string]$ProfileName = "Display",
   [string]$LogFilePrefix = "display-topology-ddcci",
+  [ValidateRange(0, 36500)]
+  [int]$LogRetentionDays = 30,
+  [ValidateRange(0, 100000)]
+  [int]$LogMaxFiles = 100,
   [string]$LogPath = ""
 )
 
 $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $MyInvocation.MyCommand.Path
 $script:LoggingEnabled = -not $NoLog
+$runtimeUtilsPath = Join-Path $root "topology-ddcci-runtime-utils.ps1"
+if (-not (Test-Path -LiteralPath $runtimeUtilsPath)) {
+  throw "Runtime utility script not found: $runtimeUtilsPath"
+}
+. $runtimeUtilsPath
 
 function ConvertTo-SafeFileNameToken($Value, $Fallback) {
   $token = [string]$Value
@@ -63,6 +73,17 @@ function Initialize-LogPath {
   if ([string]::IsNullOrWhiteSpace($LogPath)) {
     $effectiveLogPrefix = ConvertTo-SafeFileNameToken $LogFilePrefix "display-topology-ddcci"
     $logDirectory = Join-Path $root "log"
+    if (-not (Test-Path -LiteralPath $logDirectory)) {
+      New-Item -ItemType Directory -Path $logDirectory -Force | Out-Null
+    }
+    $expiredLogs = @(Get-TopologyLogFilesToRemove `
+      -Directory $logDirectory `
+      -Prefix $effectiveLogPrefix `
+      -RetentionDays $LogRetentionDays `
+      -MaxFiles $LogMaxFiles)
+    foreach ($expiredLog in $expiredLogs) {
+      Remove-Item -LiteralPath $expiredLog.FullName -Force -ErrorAction SilentlyContinue
+    }
     $script:LogPath = Join-Path $logDirectory ("{0}-{1}.log" -f $effectiveLogPrefix, (Get-Date -Format "yyyyMMdd-HHmmss"))
   } else {
     $script:LogPath = $LogPath
@@ -1055,15 +1076,63 @@ function Get-TargetMatchPreview {
   return [TopologyDdcciDisplayConfigV2.PathControl]::AnalyzeTargetMatching([string[]]$TargetNeedles, [int]$TargetId, [int]$TargetOutputTechnology)
 }
 
+function Invoke-PendingTopologyCrashRecovery {
+  $statePath = Join-Path $root "state\topology-removal-pending.json"
+  if (-not (Test-Path -LiteralPath $statePath)) {
+    return
+  }
+
+  $marker = $null
+  try {
+    $marker = Get-Content -LiteralPath $statePath -Raw -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop
+  } catch {
+    Log ("Pending topology recovery marker could not be parsed; recovery will still run. Error={0}" -f $_.Exception.Message)
+  }
+
+  if ($marker -and $marker.ParentProcessId -and $marker.ParentProcessStartTimeUtc) {
+    $belongsToActiveOwner = $false
+    try {
+      $owner = Get-Process -Id ([int]$marker.ParentProcessId) -ErrorAction SilentlyContinue
+      $markerStartTime = [datetime]::Parse(
+        [string]$marker.ParentProcessStartTimeUtc,
+        [System.Globalization.CultureInfo]::InvariantCulture,
+        [System.Globalization.DateTimeStyles]::RoundtripKind)
+      if ($owner) {
+        $startTimeDelta = [Math]::Abs(($owner.StartTime.ToUniversalTime() - $markerStartTime.ToUniversalTime()).TotalSeconds)
+        $belongsToActiveOwner = $startTimeDelta -lt 1 -and $owner.Id -ne $PID
+      }
+    } catch {
+      Log ("Could not validate the pending marker owner; treating the marker as stale. Error={0}" -f $_.Exception.Message)
+    }
+    if ($belongsToActiveOwner) {
+      throw "A pending topology recovery marker belongs to active process $($owner.Id). Stop the existing listener before starting another instance."
+    }
+  }
+
+  Log "Pending topology recovery marker found. Running DisplaySwitch.exe /extend before target preflight."
+  $displaySwitchPath = Join-Path $env:windir "System32\DisplaySwitch.exe"
+  $recovery = Start-Process -FilePath $displaySwitchPath -ArgumentList "/extend" -WindowStyle Hidden -PassThru
+  $recovery.WaitForExit()
+  Start-Sleep -Seconds 2
+  Remove-Item -LiteralPath $statePath -Force -ErrorAction Stop
+  Log "Pending topology crash recovery completed."
+}
+
+if ($Listen -and -not $CompileOnly -and -not $ListDisplays) {
+  Invoke-PendingTopologyCrashRecovery
+}
+
 if ($CompileOnly) {
   [TopologyDdcciDisplayConfigV2.PathControl]::DumpActive() | Out-Null
   $testWindow = New-Object TopologyDdcciDisplayConfig.PowerSettingWindow
   $testWindow.Dispose()
   if ($TargetNeedles.Count -gt 0 -or $TargetId -ge 0 -or $TargetOutputTechnology -ge 0) {
     $compilePreview = Get-TargetMatchPreview
-    if ($compilePreview.MatchedPathCount -eq 0) {
-      throw "No active path matched target criteria during preflight: $($compilePreview.Criteria)"
-    }
+    Assert-TopologyTargetMatchCardinality `
+      -Preview $compilePreview `
+      -AllowMultipleTargets:$AllowMultipleTargets `
+      -AllowZeroActivePaths:$ExperimentalAllowZeroActivePaths `
+      -Context "compile preflight"
     Write-Output ("Target preflight succeeded. activePaths={0} matchedPaths={1} keptPaths={2} criteria={3}" -f $compilePreview.ActivePathCount, $compilePreview.MatchedPathCount, $compilePreview.KeptPathCount, $compilePreview.Criteria)
   }
   Write-Output "$ProfileName DisplayConfig path-control code compiled successfully."
@@ -1076,12 +1145,11 @@ if ($ListDisplays) {
 }
 
 $script:TargetMatchPreview = Get-TargetMatchPreview
-if ($script:TargetMatchPreview.MatchedPathCount -eq 0) {
-  throw "No active path matched target criteria during preflight: $($script:TargetMatchPreview.Criteria)"
-}
-if ($script:TargetMatchPreview.KeptPathCount -eq 0 -and -not $ExperimentalAllowZeroActivePaths) {
-  throw "The selected target includes every active display path. Single-display removal requires the explicit experimental mode and is not enabled by default."
-}
+Assert-TopologyTargetMatchCardinality `
+  -Preview $script:TargetMatchPreview `
+  -AllowMultipleTargets:$AllowMultipleTargets `
+  -AllowZeroActivePaths:$ExperimentalAllowZeroActivePaths `
+  -Context "listener preflight"
 
 function Log-AdapterState {
   Log "Display adapters"
@@ -1244,6 +1312,98 @@ function Complete-TestOnce {
   [System.Windows.Forms.Application]::ExitThread()
 }
 
+function ConvertTo-ProcessArgument($Value) {
+  return '"' + ([string]$Value).Replace('"', '\"') + '"'
+}
+
+function Get-CurrentPowerShellExecutable {
+  $powershellPath = $null
+  try {
+    $powershellPath = [System.Diagnostics.Process]::GetCurrentProcess().MainModule.FileName
+  } catch {
+    $powershellPath = $null
+  }
+  if ([string]::IsNullOrWhiteSpace($powershellPath) -or -not (Test-Path -LiteralPath $powershellPath)) {
+    $powershellPath = Join-Path $PSHOME "powershell.exe"
+  }
+  return $powershellPath
+}
+
+function Start-TopologyCrashRecoveryWatchdog {
+  param($Preview)
+
+  if ($script:CrashRecoveryProcess) {
+    return
+  }
+
+  $stateDirectory = Join-Path $root "state"
+  if (-not (Test-Path -LiteralPath $stateDirectory)) {
+    New-Item -ItemType Directory -Path $stateDirectory -Force | Out-Null
+  }
+
+  $script:CrashRecoveryStatePath = Join-Path $stateDirectory "topology-removal-pending.json"
+  $temporaryStatePath = "$($script:CrashRecoveryStatePath).$PID.tmp"
+  $parentProcessStartTimeUtc = (Get-Process -Id $PID).StartTime.ToUniversalTime()
+  $marker = New-TopologyRecoveryMarkerData `
+    -ParentProcessId $PID `
+    -ParentProcessStartTimeUtc $parentProcessStartTimeUtc `
+    -ProfileName $ProfileName `
+    -Criteria (Get-TargetCriteriaSummary) `
+    -Preview $Preview
+  $marker | ConvertTo-Json | Set-Content -LiteralPath $temporaryStatePath -Encoding UTF8
+  Move-Item -LiteralPath $temporaryStatePath -Destination $script:CrashRecoveryStatePath -Force
+
+  $watchdogPath = Join-Path $root "invoke-topology-recovery-watchdog.ps1"
+  if (-not (Test-Path -LiteralPath $watchdogPath)) {
+    Remove-Item -LiteralPath $script:CrashRecoveryStatePath -Force -ErrorAction SilentlyContinue
+    throw "Crash recovery watchdog script not found: $watchdogPath"
+  }
+
+  $recoveryLogPath = Join-Path $root "log\topology-crash-recovery.log"
+  $watchdogArguments = @(
+    "-NoProfile",
+    "-NonInteractive",
+    "-ExecutionPolicy", "Bypass",
+    "-WindowStyle", "Hidden",
+    "-File", (ConvertTo-ProcessArgument $watchdogPath),
+    "-ParentProcessId", "$PID",
+    "-StatePath", (ConvertTo-ProcessArgument $script:CrashRecoveryStatePath),
+    "-RecoveryLogPath", (ConvertTo-ProcessArgument $recoveryLogPath)
+  ) -join " "
+
+  try {
+    $script:CrashRecoveryProcess = Start-Process `
+      -FilePath (Get-CurrentPowerShellExecutable) `
+      -ArgumentList $watchdogArguments `
+      -WindowStyle Hidden `
+      -PassThru `
+      -ErrorAction Stop
+  } catch {
+    Remove-Item -LiteralPath $script:CrashRecoveryStatePath -Force -ErrorAction SilentlyContinue
+    $script:CrashRecoveryStatePath = $null
+    throw
+  }
+
+  Log "Topology crash-recovery watchdog armed. ProcessId=$($script:CrashRecoveryProcess.Id) StatePath=$($script:CrashRecoveryStatePath)"
+}
+
+function Stop-TopologyCrashRecoveryWatchdog {
+  try {
+    if ($script:CrashRecoveryProcess -and -not $script:CrashRecoveryProcess.HasExited) {
+      Stop-Process -Id $script:CrashRecoveryProcess.Id -Force -ErrorAction Stop
+      Log "Topology crash-recovery watchdog cancelled. ProcessId=$($script:CrashRecoveryProcess.Id)"
+    }
+  } catch {
+    Log ("Could not cancel topology crash-recovery watchdog: {0}" -f $_.Exception.Message)
+  } finally {
+    if ($script:CrashRecoveryStatePath) {
+      Remove-Item -LiteralPath $script:CrashRecoveryStatePath -Force -ErrorAction SilentlyContinue
+    }
+    $script:CrashRecoveryProcess = $null
+    $script:CrashRecoveryStatePath = $null
+  }
+}
+
 function Start-EmergencyRestoreWatchdog {
   if ($script:EmergencyRestoreProcess) {
     return
@@ -1266,20 +1426,11 @@ function Start-EmergencyRestoreWatchdog {
   $escapedRunOnceName = $script:EmergencyRunOnceName.Replace("'", "''")
   $watchdogCommand = "Start-Sleep -Seconds $EmergencyRestoreSeconds; Remove-ItemProperty -LiteralPath '$escapedRunOncePath' -Name '$escapedRunOnceName' -ErrorAction SilentlyContinue; Start-Process -FilePath '$escapedDisplaySwitchPath' -ArgumentList '/extend' -WindowStyle Hidden"
   $encodedCommand = [Convert]::ToBase64String([System.Text.Encoding]::Unicode.GetBytes($watchdogCommand))
-  $powershellPath = $null
-  try {
-    $powershellPath = [System.Diagnostics.Process]::GetCurrentProcess().MainModule.FileName
-  } catch {
-    $powershellPath = $null
-  }
-  if ([string]::IsNullOrWhiteSpace($powershellPath) -or -not (Test-Path -LiteralPath $powershellPath)) {
-    $powershellPath = Join-Path $PSHOME "powershell.exe"
-  }
   $watchdogArguments = "-NoProfile -NonInteractive -WindowStyle Hidden -EncodedCommand $encodedCommand"
 
   try {
     $script:EmergencyRestoreProcess = Start-Process `
-      -FilePath $powershellPath `
+      -FilePath (Get-CurrentPowerShellExecutable) `
       -ArgumentList $watchdogArguments `
       -WindowStyle Hidden `
       -PassThru `
@@ -1323,18 +1474,18 @@ function Apply-TopologyDdcciSleep {
   $script:State = "Applying"
   try {
     $currentPreview = Get-TargetMatchPreview
-    if ($currentPreview.MatchedPathCount -eq 0) {
-      throw "No active path matched target criteria at apply time: $($currentPreview.Criteria)"
-    }
-    if ($currentPreview.KeptPathCount -eq 0 -and -not $ExperimentalAllowZeroActivePaths) {
-      throw "Applying the configured target would remove every active display path."
-    }
+    Assert-TopologyTargetMatchCardinality `
+      -Preview $currentPreview `
+      -AllowMultipleTargets:$AllowMultipleTargets `
+      -AllowZeroActivePaths:$ExperimentalAllowZeroActivePaths `
+      -Context "apply time"
     $script:TargetMatchPreview = $currentPreview
 
     Log-AdapterState
     Log-Block "DisplayConfig before apply" ([TopologyDdcciDisplayConfigV2.PathControl]::DumpActive())
 
     $removingLastActivePath = $script:TargetMatchPreview.KeptPathCount -eq 0
+    Start-TopologyCrashRecoveryWatchdog -Preview $script:TargetMatchPreview
     if ($removingLastActivePath) {
       Start-EmergencyRestoreWatchdog
       Log "EXPERIMENTAL: validating and applying a zero-active-path topology."
@@ -1346,6 +1497,7 @@ function Apply-TopologyDdcciSleep {
       $script:TopologyRemoved = $true
       Log-Block "Remove result" $removeResult
     } catch {
+      Stop-TopologyCrashRecoveryWatchdog
       if ($removingLastActivePath) {
         Stop-EmergencyRestoreWatchdog
       }
@@ -1372,6 +1524,12 @@ function Apply-TopologyDdcciSleep {
       Restore-TopologyDdcciSleep -Reason "pending wake after apply"
     }
   } catch {
+    if (-not $script:TopologyRemoved) {
+      Stop-TopologyCrashRecoveryWatchdog
+      if ($removingLastActivePath) {
+        Stop-EmergencyRestoreWatchdog
+      }
+    }
     Log ("Apply failed: {0}" -f $_.Exception.Message)
     Restore-TopologyDdcciSleep -Reason "apply failure cleanup" -Force -SkipWakeDebounce
   }
@@ -1540,6 +1698,7 @@ function Restore-TopologyDdcciSleep {
   if ($script:TopologyRemoved) {
     if (Restore-OriginalDisplayConfigWithRetry) {
       $script:TopologyRemoved = $false
+      Stop-TopologyCrashRecoveryWatchdog
       Stop-EmergencyRestoreWatchdog
     }
   }
@@ -1652,6 +1811,8 @@ if ($Listen) {
   $script:EmergencyRestoreProcess = $null
   $script:EmergencyRunOncePath = $null
   $script:EmergencyRunOnceName = $null
+  $script:CrashRecoveryProcess = $null
+  $script:CrashRecoveryStatePath = $null
   $script:TestOnceCompleted = $false
 
   $script:ApplyTimer = New-Object System.Windows.Forms.Timer
@@ -1719,7 +1880,7 @@ if ($Listen) {
     }
 
     Log "$ProfileName topology/DDC listener started. Log: $script:LogPath"
-    Log "ProfileName=$ProfileName TargetCriteria=$(Get-TargetCriteriaSummary) TriggerMode=$TriggerMode IdleTimeoutSeconds=$IdleTimeoutSeconds EffectiveIdleTimeoutSeconds=$script:EffectiveIdleTimeoutSeconds IdlePollMilliseconds=$IdlePollMilliseconds ExperimentalAllowZeroActivePaths=$ExperimentalAllowZeroActivePaths EmergencyRestoreSeconds=$EmergencyRestoreSeconds RemainingDisplayPowerMode=$RemainingDisplayPowerMode ApplyDelayMilliseconds=$ApplyDelayMilliseconds WakeDebounceSeconds=$WakeDebounceSeconds RestoreWakeDelayMilliseconds=$RestoreWakeDelayMilliseconds DisplayRestoreRetryCount=$DisplayRestoreRetryCount DdcPowerOnRetryCount=$DdcPowerOnRetryCount TestOnce=$TestOnce TriggerDpmsAfterSeconds=$TriggerDpmsAfterSeconds AutoRestoreAfterSeconds=$AutoRestoreAfterSeconds"
+    Log "ProfileName=$ProfileName TargetCriteria=$(Get-TargetCriteriaSummary) AllowMultipleTargets=$AllowMultipleTargets TriggerMode=$TriggerMode IdleTimeoutSeconds=$IdleTimeoutSeconds EffectiveIdleTimeoutSeconds=$script:EffectiveIdleTimeoutSeconds IdlePollMilliseconds=$IdlePollMilliseconds ExperimentalAllowZeroActivePaths=$ExperimentalAllowZeroActivePaths EmergencyRestoreSeconds=$EmergencyRestoreSeconds RemainingDisplayPowerMode=$RemainingDisplayPowerMode ApplyDelayMilliseconds=$ApplyDelayMilliseconds WakeDebounceSeconds=$WakeDebounceSeconds RestoreWakeDelayMilliseconds=$RestoreWakeDelayMilliseconds DisplayRestoreRetryCount=$DisplayRestoreRetryCount DdcPowerOnRetryCount=$DdcPowerOnRetryCount LogRetentionDays=$LogRetentionDays LogMaxFiles=$LogMaxFiles TestOnce=$TestOnce TriggerDpmsAfterSeconds=$TriggerDpmsAfterSeconds AutoRestoreAfterSeconds=$AutoRestoreAfterSeconds"
     Log ("Target preflight: activePaths={0} matchedPaths={1} keptPaths={2}" -f $script:TargetMatchPreview.ActivePathCount, $script:TargetMatchPreview.MatchedPathCount, $script:TargetMatchPreview.KeptPathCount)
 
     if ($script:IdlePreemptTimer) {
@@ -1756,6 +1917,7 @@ if ($Listen) {
       Restore-TopologyDdcciSleep -Reason "listener exiting" -Force -SkipWakeDebounce
     }
     if (-not $script:TopologyRemoved) {
+      Stop-TopologyCrashRecoveryWatchdog
       Stop-EmergencyRestoreWatchdog
     }
     if ($script:DisplayRequiredSet) {

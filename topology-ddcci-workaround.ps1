@@ -14,6 +14,7 @@ param(
   [int]$IdleTimeoutSeconds = 0,
   [ValidateRange(100, 60000)]
   [int]$IdlePollMilliseconds = 500,
+  [switch]$AllowMultipleTargets,
   [switch]$ExperimentalAllowZeroActivePaths,
   [ValidateRange(30, 86400)]
   [int]$EmergencyRestoreSeconds = 240,
@@ -29,6 +30,10 @@ param(
   [int]$TargetOutputTechnology = -1,
   [string]$ProfileName = "Display",
   [string]$LogFilePrefix = "display-topology-ddcci",
+  [ValidateRange(0, 36500)]
+  [int]$LogRetentionDays = 30,
+  [ValidateRange(0, 100000)]
+  [int]$LogMaxFiles = 100,
   [string]$LogPath = ""
 )
 
@@ -84,6 +89,12 @@ $arguments = @{
   TargetOutputTechnology = $TargetOutputTechnology
   ProfileName = $ProfileName
   LogFilePrefix = $LogFilePrefix
+  LogRetentionDays = $LogRetentionDays
+  LogMaxFiles = $LogMaxFiles
+}
+
+if ($AllowMultipleTargets) {
+  $arguments.AllowMultipleTargets = $true
 }
 
 if ($TriggerDpmsAfterSeconds -gt 0) {

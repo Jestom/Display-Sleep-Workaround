@@ -52,6 +52,15 @@ Scripted test DPMS is not equivalent to the Windows power plan's natural sleep p
 - `uninstall-topology-ddcci-workaround-task.ps1`
   Removes the scheduled task and stops the listener process.
 
+- `get-topology-ddcci-workaround-status.ps1`
+  Unified task, listener, recovery-marker, active-topology, target-preflight, and recent-log status report.
+
+- `invoke-topology-recovery-watchdog.ps1`
+  Hidden crash-recovery worker. It watches the listener process and runs `DisplaySwitch.exe /extend` only when the listener exits while a topology-removal marker remains.
+
+- `topology-ddcci-runtime-utils.ps1`
+  Shared target-cardinality, log-retention, and recovery-marker helpers covered by `tests/RuntimeSafety.Tests.ps1`.
+
 - `VALIDATION.md`
   Validation status and remaining Windows tests.
 
@@ -98,6 +107,8 @@ TargetOutputTechnology  DisplayConfig outputTech. Default -1 means not constrain
 ```
 
 Different criterion types are combined with AND. Multiple `TargetNeedles` values are OR-matched.
+
+By default, the resolved criteria must match exactly one active path. This prevents two identical monitors with the same model-level `DISPLAY#...` substring from being removed together. Multi-target removal requires the explicit `-AllowMultipleTargets` switch and is checked again immediately before each topology change.
 
 ## Choose A Trigger Mode
 
@@ -191,6 +202,8 @@ Enable runtime logs during installation:
   -RemainingDisplayPowerMode Disabled
 ```
 
+The installer now verifies that `-StartNow` produced a stable listener process. Its scheduled task has no execution-time limit, so it is not stopped after 30 days. Runtime logs default to a 30-day and 100-file limit per `LogFilePrefix`; set `-LogRetentionDays 0` or `-LogMaxFiles 0` to disable the corresponding limit.
+
 Logs are written under:
 
 ```text
@@ -274,6 +287,24 @@ The subsequent `QDC_ALL_PATHS` inspection found `172` possible paths and no usab
 
 ## Status And Removal
 
+Run the unified status report:
+
+```powershell
+.\get-topology-ddcci-workaround-status.ps1 `
+  -TaskName "Topology DDC Sleep Workaround" `
+  -TargetNeedles "DISPLAY#HKCB34C"
+```
+
+It reports the scheduled task and last result, actual listener PID, pending crash-recovery marker, active DisplayConfig topology, optional target preflight, and recent logs.
+
+Run the focused maintenance tests with Pester 5:
+
+```powershell
+Invoke-Pester .\tests
+```
+
+For every listener topology-removal cycle, the runtime writes `state\topology-removal-pending.json` and starts an independent parent-process watchdog before calling `SetDisplayConfig`. A successful exact restore removes the marker and cancels the watchdog. If the listener dies while the marker remains, the watchdog runs `DisplaySwitch.exe /extend`; a later listener start also processes a stale marker before target preflight. This fallback may not preserve custom monitor positions as exactly as the normal in-process restore, but it prevents a removed topology from being left indefinitely.
+
 Check the scheduled task:
 
 ```powershell
@@ -300,6 +331,8 @@ Remove the task and stop the listener:
 - Target matching is validated before the listener can issue display-power actions.
 - A normal run refuses to remove every active display path.
 - The original active topology is captured in-process before each removal and restored on input, automatic recovery, or listener shutdown.
+- Every normal removal has an external crash-recovery watchdog and a persistent marker under `state/`.
+- Target criteria must match exactly one active path unless `-AllowMultipleTargets` is explicitly supplied.
 - `DisplaySwitch.exe /extend` remains the fallback after normal DisplayConfig restore retries fail.
 - Do not run old C340-specific and generic listeners at the same time. The installer disables the two known legacy C340 task names, and direct startup rejects another detected listener process.
 - Validate every hardware setup with `TestOnce` before installing it.
