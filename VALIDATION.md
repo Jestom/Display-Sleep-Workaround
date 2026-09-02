@@ -1,6 +1,30 @@
 # Validation
 
-Last updated: 2026-07-10
+Last updated: 2026-09-02
+
+## NVIDIA 616.56 Native Fix Validation
+
+The original affected HKC C340 / RTX 3070 Ti DisplayPort system was retested after updating from NVIDIA `610.88` (R610) to `616.56` (R615).
+
+Controlled result:
+
+| Driver | Physical displays | Active mode | NVIDIA CustomDisplay | Workaround | Result |
+| --- | --- | --- | --- | --- | --- |
+| `610.88` | C340 only | Native | Absent | Stopped | Powered black backlight after display-off |
+| `610.88` | C340 + H249W | Native | Absent | Stopped | Powered black backlight after display-off |
+| `616.56` | C340 only | Native | Absent | Stopped | Normal native sleep |
+| `616.56` | C340 + H249W | Native | Absent | Stopped | Both displays sleep normally |
+
+This validates a driver-version boundary rather than a workaround effect. `610.88` and `616.56` are consecutive public GeForce WHQL releases, so `616.56` is the first confirmed public fix on this hardware. No topology removal, DDC/CI power command, custom resolution, virtual display, or experimental driver was involved in the successful result.
+
+NVIDIA's public `616.56` release notes do not name this issue. They state that the listed fixes are only a subset of all changes, so the responsible display-miniport or DisplayPort power-management change is undocumented. The exact internal fix must not be represented as known. Existing pre-fix evidence still places the failure at the native recovery branch that entered `WakeUpAdapter`, propagated D0 to the sink, and retrained the link after display-off. A post-fix DPCD/ETW capture would be needed to prove how `616.56` changed that branch, but it is not required to establish the functional fix.
+
+Runtime status:
+
+- Prefer native Windows display sleep on the confirmed `616.56` system.
+- Do not install the workaround unless the powered black-backlight fault is reproducible.
+- Retain the runtime and diagnostics for older affected drivers and future regressions.
+- Treat `616.56` as the known-good reference point; test later releases independently.
 
 ## Current Runtime
 

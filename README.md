@@ -4,6 +4,19 @@ Language: English | [简体中文](README.zh-CN.md)
 
 Windows display-sleep workaround for monitors that enter a powered black-backlight or invalid-signal state instead of staying truly asleep.
 
+## Project Status: Native Driver Fix Confirmed
+
+On 2026-09-02, the original affected system confirmed that NVIDIA driver `616.56` restores normal native display sleep without this workaround:
+
+| Driver | Single display | Dual display | Custom resolution | Workaround |
+| --- | --- | --- | --- | --- |
+| `610.88` (R610) | Powered black backlight | Powered black backlight | Not required to reproduce | Not running |
+| `616.56` (R615) | Normal sleep | Normal sleep on both displays | None | Not running |
+
+`610.88` and `616.56` are consecutive public GeForce WHQL releases. This makes `616.56` the first confirmed public driver that fixes the issue on the validated HKC C340 / RTX 3070 Ti DisplayPort system. NVIDIA's [616.56 release notes](https://us.download.nvidia.com/Windows/616.56/616.56-win11-win10-release-notes.pdf) state that the published fixes are only a subset of the driver's total changes; they do not identify this display-sleep fix or provide a public bug number.
+
+The project is therefore in maintenance mode. On `616.56`, use native Windows display sleep and do not install the workaround unless the fault is reproducible. Keep this project for older affected drivers and for diagnosing a future regression. A newer driver should be tested independently rather than assumed fixed solely because its version is greater than `616.56`.
+
 The program does not disable the GPU or display adapter. Its default `PowerEvent` mode preserves the Windows power plan's native display-sleep flow. After Windows reports display-off, the selected problem monitor is removed from active DisplayConfig topology; the captured topology is restored on wake. Unselected healthy monitors continue using native Windows display sleep without requiring DDC/CI.
 
 ## Confirmed Behavior

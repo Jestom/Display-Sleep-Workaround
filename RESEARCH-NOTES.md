@@ -2442,3 +2442,30 @@ The decisive A/B result is that CustomDisplay does not remove the status-change 
 The first actionable divergence occurs inside `DxgkInvalidateMonitorConnections`. Native bad entered `WakeUpAdapter` at `+24.429275s`, emitted `IrpRequestSentD0`, then began `VidMmOpRestoreSegments` and 40 `DdiBuildPagingBuffer` calls. The aligned CustomDisplay-good path completed connection invalidation without `WakeUpAdapter`, adapter D0, segment restore, or paging-buffer rebuild. Both paths then continued through monitor-mode recommendation and scheduler transitions. This places the unwanted physical D0 propagation in the adapter/miniport recovery decision made after the common status-change and VidPN sequence.
 
 The status notification itself, a possible HPD event, DWM, and `NVDisplay.Container.exe` are rejected as standalone causes: the known-good CustomDisplay path contains the same kernel-originated notification and target rebuild. Suppressing connector invalidation would also suppress behavior required by the good path and is not a justified repair. Public ETW exposes the recovery branch but not the NVIDIA-private mode classification or condition that selects it. No further boundary-timing run is warranted; the next meaningful research would require observing or controlling that private miniport decision, not another DPMS/topology variant.
+
+### 2026-09-02: NVIDIA 616.56 confirmed as the first known-good public release
+
+The original affected system completed a direct driver-version A/B after the research above. NVIDIA `610.88` retained the powered black-backlight fault. After updating to `616.56`, native Windows display sleep worked correctly in both of these configurations:
+
+- C340 as the only physical display.
+- C340 plus H249W as a dual-display desktop.
+
+The successful `616.56` tests used native display modes, no NVIDIA custom resolution, no topology workaround, and no DDC/CI or virtual-display assistance. This rules out the project's topology removal and the CustomDisplay side effect as requirements for the new result.
+
+The public GeForce release sequence moves directly from `610.88` (R610) to `616.56` (R615). The functional fix is therefore bounded to the R615 transition, and `616.56` is the first confirmed public release containing it on this hardware. NVIDIA's official release notes describe changes since `610.88` and explicitly say their fixed-issue list is only a subset of the total driver changes. They do not mention powered black backlight, DisplayPort sink D3 retention, the approximately 24-second `WakeUpAdapter` branch, or a related public bug number.
+
+The strongest supported conclusion is:
+
+```text
+610.88 native: fault confirmed
+616.56 native: single-display and dual-display sleep confirmed
+fix owner: NVIDIA driver branch change strongly established by controlled behavior
+exact private implementation change: not publicly documented and not yet measured post-fix
+```
+
+The earlier technical evidence remains relevant for future regression analysis. Before the fix, the bad path reached sink D3 briefly, then the NVIDIA recovery decision entered `WakeUpAdapter`, restored adapter D0, and left DPCD `0x600=01` with a trained HBR2 link. Known-good 537.58 native mode and the same later driver using active NVIDIA CustomDisplay retained the sink in D3/link-down state. If a future driver regresses, compare it first against `616.56` and repeat the synchronized DPCD/ETW boundary capture around 20-30 seconds after display-off.
+
+References:
+
+- NVIDIA 616.56 release notes: https://us.download.nvidia.com/Windows/616.56/616.56-win11-win10-release-notes.pdf
+- NVIDIA public driver history: https://www.nvidia.com/Download/processFind.aspx?dtcid=1&lang=en-us&lid=1&osid=57&pfid=930&psid=120&whql=1
